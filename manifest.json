@@ -1,6 +1,7 @@
 {
   "name": "GymBro 2",
   "short_name": "GymBro 2",
+  "id": "/gymbro-v2/",
   "description": "GymBro v2: registro serie a serie, plan v2 y envío a CoachAI",
   "start_url": ".",
   "scope": ".",
