@@ -1,0 +1,37 @@
+{
+  "name": "GymBro 2",
+  "short_name": "GymBro 2",
+  "description": "GymBro v2: registro serie a serie, plan v2 y envío a CoachAI",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#0d2850",
+  "theme_color": "#0d2850",
+  "lang": "es",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
