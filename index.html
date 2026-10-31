@@ -169,6 +169,15 @@ input{font-family:"DM Mono",monospace;}
 .cambio-opt{text-align:left;background:var(--bg-input);color:var(--text);border:1px solid var(--border2);border-radius:10px;min-height:44px;padding:8px 12px;font-size:15px;}
 .cambio-opt.sel{border-color:var(--orange);color:var(--orange);}
 .dialog input.cambio-buscar{height:46px;font-size:16px;text-align:left;padding:0 12px;font-family:"Inter",sans-serif;}
+/* ------- envío a CoachAI ------- */
+.menu-badge{position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;border-radius:9px;background:var(--orange);color:#04101f;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px;font-family:"DM Mono",monospace;}
+.dialog input.sync-url{height:46px;font-size:14px;text-align:left;padding:0 12px;font-family:"DM Mono",monospace;}
+.sync-check{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:14px;color:var(--text);}
+.sync-check input{width:20px;height:20px;flex:none;}
+.sync-msg{margin-top:12px;font-size:13px;color:var(--dim);font-family:"DM Mono",monospace;word-break:break-word;}
+.sync-msg.ok{color:var(--green);} .sync-msg.mal{color:var(--red);}
+.fc-sync{margin-top:8px;font-size:13px;font-family:"DM Mono",monospace;color:var(--dim);}
+.fc-sync.ok{color:var(--green);} .fc-sync.pend{color:var(--orange);}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg-input);border:1px solid var(--border);color:var(--text);padding:10px 18px;border-radius:99px;font-size:14px;z-index:100;}
 </style>
 </head>
@@ -215,6 +224,19 @@ const metaDesdeV1 = (m) => {
 const CAMBIOS_KEY = 'gb2_cambios';   // ejercicio realizado en lugar del del plan
 const loadCambios = () => { try { return JSON.parse(localStorage.getItem(CAMBIOS_KEY)) || {}; } catch(e){ return {}; } };
 const saveCambios = (c) => localStorage.setItem(CAMBIOS_KEY, JSON.stringify(c));
+// Envío a CoachAI: la dirección se guarda solo en este navegador (nada privado en el repositorio)
+const SYNC_KEY = 'gb2_sync';                // {url, auto, ultimo:{fecha, n, error}}
+const ENVIADAS_KEY = 'gb2_sync_enviadas';   // {"fecha|sesión": firma de lo enviado}
+const loadSync = () => { try { return { auto: true, ...(JSON.parse(localStorage.getItem(SYNC_KEY)) || {}) }; } catch(e){ return { auto: true }; } };
+const saveSync = (s) => localStorage.setItem(SYNC_KEY, JSON.stringify(s));
+const loadEnviadas = () => { try { return JSON.parse(localStorage.getItem(ENVIADAS_KEY)) || {}; } catch(e){ return {}; } };
+const saveEnviadas = (s) => localStorage.setItem(ENVIADAS_KEY, JSON.stringify(s));
+const hashStr = (s) => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + '.' + s.length; };
+const urlCoachAI = (u) => (u || '').trim().replace(/\/+$/, '');
+const conTiempo = (ms) => { const c = new AbortController(); const t = setTimeout(()=>c.abort(), ms); return { signal: c.signal, fin: ()=>clearTimeout(t) }; };
+const motivoFallo = (e) => e && e.name === 'AbortError' ? 'CoachAI no responde (¿Tailscale activo y el servidor encendido?)'
+  : e instanceof TypeError ? 'no se puede conectar con CoachAI (¿Tailscale activo? ¿permiso de red local en Chrome?)'
+  : (e && e.message) || 'error desconocido';
 const MIGRADO_KEY = 'gb2_migrado';
 function migrarDesdeV1(){
   try {
@@ -690,6 +712,20 @@ function App(){
   const [sessMeta, setSessMeta] = useState(loadSessMeta);
   const [cambios, setCambios] = useState(loadCambios);
   const [cambioDlg, setCambioDlg] = useState(null);   // {ex, buscar}
+  const [sync, setSync] = useState(loadSync);
+  const [syncDlg, setSyncDlg] = useState(null);       // {url, auto, msg, clase, probando}
+  const [enviadas, setEnviadas] = useState(loadEnviadas);
+  const [enviando, setEnviando] = useState(false);
+  const [reintento, setReintento] = useState(0);
+  const enviandoRef = useRef(false);
+  const guardarSync = (cambio) => setSync(s => { const ns = typeof cambio === 'function' ? cambio(s) : {...s, ...cambio}; saveSync(ns); return ns; });
+  useEffect(()=>{   // al recuperar conexión o volver a la app, reintentar lo pendiente
+    const otraVez = () => setReintento(n => n + 1);
+    const visible = () => { if (document.visibilityState === 'visible') otraVez(); };
+    window.addEventListener('online', otraVez);
+    document.addEventListener('visibilitychange', visible);
+    return () => { window.removeEventListener('online', otraVez); document.removeEventListener('visibilitychange', visible); };
+  }, []);
   useEffect(()=>{ if (MIGRACION) showToast('Datos copiados de GymBro v1'); }, []);
   const [bwOpen, setBwOpen] = useState(false);
   const [bwDraft, setBwDraft] = useState('');
@@ -946,6 +982,73 @@ function App(){
     notas_sesion: notes[date] || null,
     ejercicios: recs
   }; };
+  /* --- Envío a CoachAI ---
+     Se envían las sesiones finalizadas y las de días anteriores (aunque no se
+     finalizaran) que hayan cambiado desde el último envío. CoachAI sustituye cada
+     sesión por fecha|sesión, así que reenviar no duplica. */
+  const sesionesPorClave = useMemo(()=>{
+    const m = {};
+    history.forEach(r => { if (r.sets && r.sets.length){ const k = r.date + '|' + r.session_key; (m[k] = m[k] || []).push(r); } });
+    return m;
+  }, [history]);
+  const firma = (k) => { const d = k.split('|')[0];
+    return hashStr(JSON.stringify([sesionesPorClave[k], sessMeta[k] || null, notes[d] || null, bodyweight[d] != null ? bodyweight[d] : null])); };
+  const pendientes = useMemo(()=> Object.keys(sesionesPorClave)
+    .filter(k => (sessMeta[k] || k.split('|')[0] < todayStr()) && enviadas[k] !== firma(k)).sort(),
+    [sesionesPorClave, sessMeta, notes, bodyweight, enviadas]);
+  const enviarCoachAI = async (claves, manual) => {
+    const url = urlCoachAI(sync.url);
+    if (!url){ if (manual) setSyncDlg({ url: '', auto: sync.auto !== false, msg: 'Escribe primero la dirección de CoachAI.' }); return; }
+    if (!claves.length){ if (manual) showToast('Todo enviado a CoachAI ✓'); return; }
+    if (enviandoRef.current) return;
+    enviandoRef.current = true; setEnviando(true);
+    const firmas = Object.fromEntries(claves.map(k => [k, firma(k)]));
+    const t = conTiempo(30000);
+    try {
+      const sesiones = claves.map(k => sessionPayload(k.split('|')[0], sesionesPorClave[k]));
+      const r = await fetch(url + '/api/fuerza/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ formato: 'gym_tracker_semana', version_export: 2, origen: 'gymbro-v2', sesiones }), signal: t.signal });
+      if (!r.ok){
+        let d = ''; try { d = (await r.json()).detail || ''; } catch(e){}
+        throw new Error('CoachAI respondió ' + r.status + (d ? ': ' + d : ''));
+      }
+      setEnviadas(prev => { const ne = {...prev, ...firmas}; saveEnviadas(ne); return ne; });
+      guardarSync({ ultimo: { fecha: isoLocal(new Date()), n: claves.length, error: null } });
+      showToast('Enviado a CoachAI: ' + claves.length + (claves.length === 1 ? ' sesión' : ' sesiones'));
+    } catch(e){
+      guardarSync({ ultimo: { ...(sync.ultimo || {}), error: motivoFallo(e), fecha_error: isoLocal(new Date()) } });
+      if (manual) showToast('No enviado: ' + motivoFallo(e));
+    } finally {
+      t.fin(); enviandoRef.current = false; setEnviando(false);
+    }
+  };
+  const clavesPend = pendientes.join(',');
+  useEffect(()=>{   // envío automático, con un pequeño margen por si sigues editando
+    if (sync.auto === false || !urlCoachAI(sync.url) || !pendientes.length || !navigator.onLine) return;
+    const id = setTimeout(()=>enviarCoachAI(pendientes, false), 2500);
+    return () => clearTimeout(id);
+  }, [clavesPend, sync.auto, sync.url, reintento]);
+  const abrirSync = () => { setMenuOpen(false); setSyncDlg({ url: sync.url || '', auto: sync.auto !== false }); };
+  const probarSync = async () => {
+    const url = urlCoachAI(syncDlg.url);
+    if (!/^https?:\/\//.test(url)){ setSyncDlg(d => ({...d, msg: 'La dirección debe empezar por https://', clase: 'mal'})); return; }
+    setSyncDlg(d => ({...d, probando: true, msg: 'Probando…', clase: ''}));
+    const t = conTiempo(12000);
+    try {
+      const r = await fetch(url + '/api/fuerza/ejercicios', { signal: t.signal });
+      if (!r.ok) throw new Error('CoachAI respondió ' + r.status);
+      setSyncDlg(d => ({...d, probando: false, msg: 'Conectado con CoachAI ✓', clase: 'ok'}));
+    } catch(e){
+      setSyncDlg(d => ({...d, probando: false, msg: motivoFallo(e), clase: 'mal'}));
+    } finally { t.fin(); }
+  };
+  const guardarSyncDlg = () => {
+    guardarSync({ url: urlCoachAI(syncDlg.url), auto: !!syncDlg.auto });
+    setSyncDlg(null);
+    setReintento(n => n + 1);
+    vibrate(40);
+  };
+
   const exportLastSession = () => {
     if (!history.length){ showToast('Sin registros todavía'); setMenuOpen(false); return; }
     const ultimo = [...history].sort((a,b)=> (a.date+(a.sets[0]&&a.sets[0].ts||'')) < (b.date+(b.sets[0]&&b.sets[0].ts||'')) ? 1 : -1)[0];
@@ -1080,7 +1183,8 @@ function App(){
               </option>
             ))}
           </select>
-          <button className="icon-btn" title="Menú" onClick={()=>setMenuOpen(m=>!m)}>⋮</button>
+          <button className="icon-btn" title="Menú" style={{position:'relative'}} onClick={()=>setMenuOpen(m=>!m)}>⋮
+            {urlCoachAI(sync.url) && pendientes.length > 0 && <span className="menu-badge">{pendientes.length}</span>}</button>
         </div>
         <TimerBar timer={timer} onAdd={addTime} onSkip={skipTimer}/>
         {menuOpen && (
@@ -1088,6 +1192,9 @@ function App(){
             <button onClick={()=>{ setBwDraft(lastBW ? String(lastBW.kg).replace('.',',') : ''); setBwOpen(true); setMenuOpen(false); }}>⚖ Peso corporal{lastBW ? ' ('+fmtKg(lastBW.kg)+' kg)' : ''}</button>
             <button onClick={exportLastSession}>⬇ Exportar último entreno</button>
             <button onClick={exportWeek}>⬇ Exportar semana S{selWeek}</button>
+            <button disabled={enviando} onClick={()=>{ setMenuOpen(false); enviarCoachAI(pendientes, true); }}>
+              ⇅ {enviando ? 'Enviando…' : 'Enviar a CoachAI' + (!urlCoachAI(sync.url) ? '' : pendientes.length ? ' (' + pendientes.length + ' pendientes)' : ' ✓')}</button>
+            <button onClick={abrirSync}>⚙ Conexión con CoachAI</button>
             <button onClick={exportHistory}>⬇ Exportar todo el historial</button>
             <button onClick={()=>importRef.current.click()}>⬆ Importar progreso</button>
             <button className="danger" onClick={deletePlan}>🗑️ Borrar plan</button>
@@ -1214,6 +1321,9 @@ function App(){
                   <div className="finish-card">
                     <div className="fc-title">✔ Entrenamiento finalizado</div>
                     <div className="fc-sub">{todayRecs.length} ejercicios · {totalSets} series · {String(t.getHours()).padStart(2,'0')}:{String(t.getMinutes()).padStart(2,'0')}</div>
+                    {urlCoachAI(sync.url) && (pendientes.includes(metaKey(today, sessionKey))
+                      ? <div className="fc-sync pend">{enviando ? 'Enviando a CoachAI…' : '⇅ Pendiente de enviar a CoachAI'}{!enviando && sync.ultimo && sync.ultimo.error ? ' · ' + sync.ultimo.error : ''}</div>
+                      : <div className="fc-sync ok">✓ Enviada a CoachAI</div>)}
                     <button onClick={exportLastSession}>⬇ Exportar esta sesión para revisarla</button>
                   </div>
                 );
@@ -1292,6 +1402,31 @@ function App(){
           </div>
         );
       })()}
+      {syncDlg && (
+        <div className="overlay" onClick={()=>setSyncDlg(null)}>
+          <div className="dialog" onClick={e=>e.stopPropagation()}>
+            <h3>⇅ Conexión con CoachAI</h3>
+            <div className="dlg-sub">Dirección del backend por Tailscale (https, con puerto). Se guarda solo en este móvil.</div>
+            <div className="dlg-row">
+              <input className="sync-url" type="url" inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                placeholder="https://equipo.tailnet.ts.net:8444"
+                value={syncDlg.url} onChange={e=>setSyncDlg({...syncDlg, url: e.target.value, msg: null})} />
+            </div>
+            <label className="sync-check">
+              <input type="checkbox" checked={!!syncDlg.auto} onChange={e=>setSyncDlg({...syncDlg, auto: e.target.checked})} />
+              Enviar automáticamente (al finalizar y al recuperar conexión)
+            </label>
+            {syncDlg.msg && <div className={'sync-msg ' + (syncDlg.clase || '')}>{syncDlg.msg}</div>}
+            {!syncDlg.msg && sync.ultimo && <div className="sync-msg">
+              {sync.ultimo.n ? 'Último envío: ' + sync.ultimo.fecha.slice(0,16).replace('T',' ') + ' (' + sync.ultimo.n + ')' : ''}
+              {sync.ultimo.error ? (sync.ultimo.n ? ' · ' : '') + 'Último fallo: ' + sync.ultimo.error : ''}</div>}
+            <div className="dlg-actions">
+              <button className="dlg-cancel" disabled={syncDlg.probando} onClick={probarSync}>Probar</button>
+              <button className="dlg-save" onClick={guardarSyncDlg}>Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
