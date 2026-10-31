@@ -174,7 +174,8 @@ input{font-family:"DM Mono",monospace;}
 .dialog input.sync-url{height:46px;font-size:14px;text-align:left;padding:0 12px;font-family:"DM Mono",monospace;}
 .sync-check{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:14px;color:var(--text);}
 .sync-check input{width:20px;height:20px;flex:none;}
-.sync-msg{margin-top:12px;font-size:13px;color:var(--dim);font-family:"DM Mono",monospace;word-break:break-word;}
+.sync-msg{margin-top:12px;font-size:13px;color:var(--dim);font-family:"DM Mono",monospace;word-break:break-word;white-space:pre-line;}
+.sync-lbl{font-size:12px;color:var(--dim2);text-transform:uppercase;letter-spacing:.5px;margin:10px 0 6px;}
 .sync-msg.ok{color:var(--green);} .sync-msg.mal{color:var(--red);}
 .fc-sync{margin-top:8px;font-size:13px;font-family:"DM Mono",monospace;color:var(--dim);}
 .fc-sync.ok{color:var(--green);} .fc-sync.pend{color:var(--orange);}
@@ -225,7 +226,7 @@ const CAMBIOS_KEY = 'gb2_cambios';   // ejercicio realizado en lugar del del pla
 const loadCambios = () => { try { return JSON.parse(localStorage.getItem(CAMBIOS_KEY)) || {}; } catch(e){ return {}; } };
 const saveCambios = (c) => localStorage.setItem(CAMBIOS_KEY, JSON.stringify(c));
 // Envío a CoachAI: la dirección se guarda solo en este navegador (nada privado en el repositorio)
-const SYNC_KEY = 'gb2_sync';                // {url, auto, ultimo:{fecha, n, error}}
+const SYNC_KEY = 'gb2_sync';                // {url (Tailscale), urlLocal (wifi), auto, preferida, ultimo:{fecha, n, via, error}}
 const ENVIADAS_KEY = 'gb2_sync_enviadas';   // {"fecha|sesión": firma de lo enviado}
 const loadSync = () => { try { return { auto: true, ...(JSON.parse(localStorage.getItem(SYNC_KEY)) || {}) }; } catch(e){ return { auto: true }; } };
 const saveSync = (s) => localStorage.setItem(SYNC_KEY, JSON.stringify(s));
@@ -233,9 +234,19 @@ const loadEnviadas = () => { try { return JSON.parse(localStorage.getItem(ENVIAD
 const saveEnviadas = (s) => localStorage.setItem(ENVIADAS_KEY, JSON.stringify(s));
 const hashStr = (s) => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return (h >>> 0).toString(36) + '.' + s.length; };
 const urlCoachAI = (u) => (u || '').trim().replace(/\/+$/, '');
+// Direcciones a probar, primero la que funcionó la última vez
+const destinos = (s) => {
+  const l = [];
+  if (urlCoachAI(s.urlLocal)) l.push({ url: urlCoachAI(s.urlLocal), local: true, via: 'wifi' });
+  if (urlCoachAI(s.url)) l.push({ url: urlCoachAI(s.url), local: false, via: 'Tailscale' });
+  return s.preferida === 'Tailscale' ? l.reverse() : l;
+};
+// Desde https (GitHub Pages) a http://192.168.x.x Chrome exige declararlo como red local
+// (Local Network Access): pide permiso una vez y entonces no lo bloquea como contenido mixto.
+const pedirA = (d, ruta, opciones) => fetch(d.url + ruta, d.local ? { ...opciones, targetAddressSpace: 'local' } : opciones);
 const conTiempo = (ms) => { const c = new AbortController(); const t = setTimeout(()=>c.abort(), ms); return { signal: c.signal, fin: ()=>clearTimeout(t) }; };
 const motivoFallo = (e) => e && e.name === 'AbortError' ? 'CoachAI no responde (¿Tailscale activo y el servidor encendido?)'
-  : e instanceof TypeError ? 'no se puede conectar con CoachAI (¿Tailscale activo? ¿permiso de red local en Chrome?)'
+  : e instanceof TypeError ? 'no se puede conectar con CoachAI (¿Tailscale activo o en casa? ¿permiso de red local en Chrome?)'
   : (e && e.message) || 'error desconocido';
 const MIGRADO_KEY = 'gb2_migrado';
 function migrarDesdeV1(){
@@ -997,53 +1008,68 @@ function App(){
     .filter(k => (sessMeta[k] || k.split('|')[0] < todayStr()) && enviadas[k] !== firma(k)).sort(),
     [sesionesPorClave, sessMeta, notes, bodyweight, enviadas]);
   const enviarCoachAI = async (claves, manual) => {
-    const url = urlCoachAI(sync.url);
-    if (!url){ if (manual) setSyncDlg({ url: '', auto: sync.auto !== false, msg: 'Escribe primero la dirección de CoachAI.' }); return; }
+    const lista = destinos(sync);
+    if (!lista.length){ if (manual) setSyncDlg({ url: '', urlLocal: '', auto: sync.auto !== false, msg: 'Escribe primero la dirección de CoachAI.' }); return; }
     if (!claves.length){ if (manual) showToast('Todo enviado a CoachAI ✓'); return; }
     if (enviandoRef.current) return;
     enviandoRef.current = true; setEnviando(true);
     const firmas = Object.fromEntries(claves.map(k => [k, firma(k)]));
-    const t = conTiempo(30000);
+    const body = JSON.stringify({ formato: 'gym_tracker_semana', version_export: 2, origen: 'gymbro-v2',
+      sesiones: claves.map(k => sessionPayload(k.split('|')[0], sesionesPorClave[k])) });
+    let fallo = null;
     try {
-      const sesiones = claves.map(k => sessionPayload(k.split('|')[0], sesionesPorClave[k]));
-      const r = await fetch(url + '/api/fuerza/import', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ formato: 'gym_tracker_semana', version_export: 2, origen: 'gymbro-v2', sesiones }), signal: t.signal });
-      if (!r.ok){
-        let d = ''; try { d = (await r.json()).detail || ''; } catch(e){}
-        throw new Error('CoachAI respondió ' + r.status + (d ? ': ' + d : ''));
+      for (const d of lista){          // wifi y Tailscale: la primera que conteste
+        const t = conTiempo(d.local ? 8000 : 30000);
+        let r;
+        try {
+          r = await pedirA(d, '/api/fuerza/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: t.signal });
+        } catch(e){ fallo = e; continue; }   // no se llega: probar la siguiente
+        finally { t.fin(); }
+        if (!r.ok){                     // se llega pero CoachAI rechaza: no se reintenta por otra vía
+          let det = ''; try { det = (await r.json()).detail || ''; } catch(e){}
+          throw new Error('CoachAI respondió ' + r.status + (det ? ': ' + det : ''));
+        }
+        setEnviadas(prev => { const ne = {...prev, ...firmas}; saveEnviadas(ne); return ne; });
+        guardarSync({ preferida: d.via, ultimo: { fecha: isoLocal(new Date()), n: claves.length, via: d.via, error: null } });
+        showToast('Enviado a CoachAI por ' + d.via + ': ' + claves.length + (claves.length === 1 ? ' sesión' : ' sesiones'));
+        return;
       }
-      setEnviadas(prev => { const ne = {...prev, ...firmas}; saveEnviadas(ne); return ne; });
-      guardarSync({ ultimo: { fecha: isoLocal(new Date()), n: claves.length, error: null } });
-      showToast('Enviado a CoachAI: ' + claves.length + (claves.length === 1 ? ' sesión' : ' sesiones'));
+      throw fallo || new Error('sin dirección');
     } catch(e){
-      guardarSync({ ultimo: { ...(sync.ultimo || {}), error: motivoFallo(e), fecha_error: isoLocal(new Date()) } });
+      guardarSync(s => ({ ...s, ultimo: { ...(s.ultimo || {}), error: motivoFallo(e), fecha_error: isoLocal(new Date()) } }));
       if (manual) showToast('No enviado: ' + motivoFallo(e));
     } finally {
-      t.fin(); enviandoRef.current = false; setEnviando(false);
+      enviandoRef.current = false; setEnviando(false);
     }
   };
   const clavesPend = pendientes.join(',');
   useEffect(()=>{   // envío automático, con un pequeño margen por si sigues editando
-    if (sync.auto === false || !urlCoachAI(sync.url) || !pendientes.length || !navigator.onLine) return;
+    if (sync.auto === false || !destinos(sync).length || !pendientes.length || !navigator.onLine) return;
     const id = setTimeout(()=>enviarCoachAI(pendientes, false), 2500);
     return () => clearTimeout(id);
-  }, [clavesPend, sync.auto, sync.url, reintento]);
-  const abrirSync = () => { setMenuOpen(false); setSyncDlg({ url: sync.url || '', auto: sync.auto !== false }); };
-  const probarSync = async () => {
-    const url = urlCoachAI(syncDlg.url);
-    if (!/^https?:\/\//.test(url)){ setSyncDlg(d => ({...d, msg: 'La dirección debe empezar por https://', clase: 'mal'})); return; }
+  }, [clavesPend, sync.auto, sync.url, sync.urlLocal, reintento]);
+  const hayDestino = destinos(sync).length > 0;
+  const abrirSync = () => { setMenuOpen(false); setSyncDlg({ url: sync.url || '', urlLocal: sync.urlLocal || '', auto: sync.auto !== false }); };
+  const probarSync = async () => {   // desde el botón: así Chrome puede pedir el permiso de red local
+    const lista = destinos({ url: syncDlg.url, urlLocal: syncDlg.urlLocal });
+    if (!lista.length || lista.some(d => !/^https?:\/\//.test(d.url))){
+      setSyncDlg(d => ({...d, msg: 'Escribe al menos una dirección, empezando por https:// o http://', clase: 'mal'})); return; }
     setSyncDlg(d => ({...d, probando: true, msg: 'Probando…', clase: ''}));
-    const t = conTiempo(12000);
-    try {
-      const r = await fetch(url + '/api/fuerza/ejercicios', { signal: t.signal });
-      if (!r.ok) throw new Error('CoachAI respondió ' + r.status);
-      setSyncDlg(d => ({...d, probando: false, msg: 'Conectado con CoachAI ✓', clase: 'ok'}));
-    } catch(e){
-      setSyncDlg(d => ({...d, probando: false, msg: motivoFallo(e), clase: 'mal'}));
-    } finally { t.fin(); }
+    const lineas = [];
+    let alguna = false;
+    for (const d of lista){
+      const t = conTiempo(d.local ? 8000 : 12000);
+      try {
+        const r = await pedirA(d, '/api/fuerza/ejercicios', { signal: t.signal });
+        if (!r.ok) throw new Error('CoachAI respondió ' + r.status);
+        lineas.push(d.via + ': conectado ✓'); alguna = true;
+      } catch(e){ lineas.push(d.via + ': ' + motivoFallo(e)); }
+      finally { t.fin(); }
+    }
+    setSyncDlg(d => ({...d, probando: false, msg: lineas.join('\n'), clase: alguna ? 'ok' : 'mal'}));
   };
   const guardarSyncDlg = () => {
-    guardarSync({ url: urlCoachAI(syncDlg.url), auto: !!syncDlg.auto });
+    guardarSync({ url: urlCoachAI(syncDlg.url), urlLocal: urlCoachAI(syncDlg.urlLocal), auto: !!syncDlg.auto });
     setSyncDlg(null);
     setReintento(n => n + 1);
     vibrate(40);
@@ -1184,7 +1210,7 @@ function App(){
             ))}
           </select>
           <button className="icon-btn" title="Menú" style={{position:'relative'}} onClick={()=>setMenuOpen(m=>!m)}>⋮
-            {urlCoachAI(sync.url) && pendientes.length > 0 && <span className="menu-badge">{pendientes.length}</span>}</button>
+            {hayDestino && pendientes.length > 0 && <span className="menu-badge">{pendientes.length}</span>}</button>
         </div>
         <TimerBar timer={timer} onAdd={addTime} onSkip={skipTimer}/>
         {menuOpen && (
@@ -1193,7 +1219,7 @@ function App(){
             <button onClick={exportLastSession}>⬇ Exportar último entreno</button>
             <button onClick={exportWeek}>⬇ Exportar semana S{selWeek}</button>
             <button disabled={enviando} onClick={()=>{ setMenuOpen(false); enviarCoachAI(pendientes, true); }}>
-              ⇅ {enviando ? 'Enviando…' : 'Enviar a CoachAI' + (!urlCoachAI(sync.url) ? '' : pendientes.length ? ' (' + pendientes.length + ' pendientes)' : ' ✓')}</button>
+              ⇅ {enviando ? 'Enviando…' : 'Enviar a CoachAI' + (!hayDestino ? '' : pendientes.length ? ' (' + pendientes.length + ' pendientes)' : ' ✓')}</button>
             <button onClick={abrirSync}>⚙ Conexión con CoachAI</button>
             <button onClick={exportHistory}>⬇ Exportar todo el historial</button>
             <button onClick={()=>importRef.current.click()}>⬆ Importar progreso</button>
@@ -1321,9 +1347,9 @@ function App(){
                   <div className="finish-card">
                     <div className="fc-title">✔ Entrenamiento finalizado</div>
                     <div className="fc-sub">{todayRecs.length} ejercicios · {totalSets} series · {String(t.getHours()).padStart(2,'0')}:{String(t.getMinutes()).padStart(2,'0')}</div>
-                    {urlCoachAI(sync.url) && (pendientes.includes(metaKey(today, sessionKey))
+                    {hayDestino && (pendientes.includes(metaKey(today, sessionKey))
                       ? <div className="fc-sync pend">{enviando ? 'Enviando a CoachAI…' : '⇅ Pendiente de enviar a CoachAI'}{!enviando && sync.ultimo && sync.ultimo.error ? ' · ' + sync.ultimo.error : ''}</div>
-                      : <div className="fc-sync ok">✓ Enviada a CoachAI</div>)}
+                      : <div className="fc-sync ok">✓ Enviada a CoachAI{sync.ultimo && sync.ultimo.via ? ' por ' + sync.ultimo.via : ''}</div>)}
                     <button onClick={exportLastSession}>⬇ Exportar esta sesión para revisarla</button>
                   </div>
                 );
@@ -1406,7 +1432,14 @@ function App(){
         <div className="overlay" onClick={()=>setSyncDlg(null)}>
           <div className="dialog" onClick={e=>e.stopPropagation()}>
             <h3>⇅ Conexión con CoachAI</h3>
-            <div className="dlg-sub">Dirección del backend por Tailscale (https, con puerto). Se guarda solo en este móvil.</div>
+            <div className="dlg-sub">Direcciones del backend, con puerto. Se prueba primero la que funcionó la última vez. Se guardan solo en este móvil.</div>
+            <div className="sync-lbl">En casa (wifi)</div>
+            <div className="dlg-row">
+              <input className="sync-url" type="url" inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                placeholder="http://192.168.1.50:8001"
+                value={syncDlg.urlLocal} onChange={e=>setSyncDlg({...syncDlg, urlLocal: e.target.value, msg: null})} />
+            </div>
+            <div className="sync-lbl">Fuera de casa (Tailscale)</div>
             <div className="dlg-row">
               <input className="sync-url" type="url" inputMode="url" autoCapitalize="off" autoCorrect="off" spellCheck={false}
                 placeholder="https://equipo.tailnet.ts.net:8444"
@@ -1418,7 +1451,7 @@ function App(){
             </label>
             {syncDlg.msg && <div className={'sync-msg ' + (syncDlg.clase || '')}>{syncDlg.msg}</div>}
             {!syncDlg.msg && sync.ultimo && <div className="sync-msg">
-              {sync.ultimo.n ? 'Último envío: ' + sync.ultimo.fecha.slice(0,16).replace('T',' ') + ' (' + sync.ultimo.n + ')' : ''}
+              {sync.ultimo.n ? 'Último envío: ' + sync.ultimo.fecha.slice(0,16).replace('T',' ') + ' (' + sync.ultimo.n + (sync.ultimo.via ? ', ' + sync.ultimo.via : '') + ')' : ''}
               {sync.ultimo.error ? (sync.ultimo.n ? ' · ' : '') + 'Último fallo: ' + sync.ultimo.error : ''}</div>}
             <div className="dlg-actions">
               <button className="dlg-cancel" disabled={syncDlg.probando} onClick={probarSync}>Probar</button>
