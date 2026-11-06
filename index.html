@@ -169,6 +169,26 @@ input{font-family:"DM Mono",monospace;}
 .cambio-opt{text-align:left;background:var(--bg-input);color:var(--text);border:1px solid var(--border2);border-radius:10px;min-height:44px;padding:8px 12px;font-size:15px;}
 .cambio-opt.sel{border-color:var(--orange);color:var(--orange);}
 .dialog input.cambio-buscar{height:46px;font-size:16px;text-align:left;padding:0 12px;font-family:"Inter",sans-serif;}
+/* ------- movilidad (8e) ------- */
+.mov-card{background:var(--bg-card);border:1px solid rgba(168,85,247,.45);border-radius:14px;margin-top:12px;padding:12px 14px;}
+.mov-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;}
+.mov-title{font-family:"Barlow Condensed",sans-serif;font-size:19px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:#d8b4fe;}
+.mov-prog{font-family:"DM Mono",monospace;font-size:12.5px;color:var(--dim);white-space:nowrap;}
+.mov-prog.ok{color:var(--green);}
+.mov-sub{font-size:12.5px;color:var(--dim);margin-top:2px;}
+.mov-letra{font-family:"DM Mono",monospace;font-size:11.5px;color:var(--dim2);letter-spacing:.8px;margin-top:12px;}
+.mov-ex{border-top:1px solid var(--border2);padding:10px 0 4px;margin-top:6px;}
+.mov-ex-top{display:flex;align-items:flex-start;gap:8px;}
+.mov-name{flex:1;font-size:15.5px;font-weight:600;line-height:1.25;}
+.mov-name .mov-b{font-family:"DM Mono",monospace;font-size:12px;color:var(--dim2);margin-right:6px;font-weight:400;}
+.mov-presc{font-size:13px;color:var(--dim);margin-top:2px;font-family:"DM Mono",monospace;}
+.mov-nota{font-size:12.5px;color:var(--orange);margin-top:2px;}
+.mov-row{display:flex;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap;}
+.mov-v{min-width:46px;height:46px;border-radius:12px;background:var(--bg-input);border:1px solid var(--border2);color:var(--text);font-family:"DM Mono",monospace;font-size:15px;font-weight:600;}
+.mov-v.done{background:rgba(34,197,94,.18);border-color:rgba(34,197,94,.5);color:var(--green);}
+.mov-kg{display:flex;align-items:center;gap:6px;margin-left:auto;color:var(--dim);font-size:13px;}
+.mov-kg input{width:74px;height:46px;border-radius:12px;background:var(--bg-input);border:1px solid var(--border2);color:var(--text);font-size:17px;text-align:center;font-family:"DM Mono",monospace;}
+.mov-ult{font-size:12px;color:var(--dim2);margin-top:4px;font-family:"DM Mono",monospace;}
 /* ------- envío a CoachAI ------- */
 .menu-badge{position:absolute;top:-5px;right:-5px;min-width:18px;height:18px;border-radius:9px;background:var(--orange);color:#04101f;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;padding:0 4px;font-family:"DM Mono",monospace;}
 .dialog input.sync-url{height:46px;font-size:14px;text-align:left;padding:0 12px;font-family:"DM Mono",monospace;}
@@ -369,6 +389,11 @@ function itemQuery(item){
     .replace(/[()·,:]/g,' ').replace(/\s+/g,' ').trim();
 }
 
+// Días que se abren para registrar: fuerza, o cualquier día con movilidad en el plan (8e)
+const tieneMovilidad = (d) => !!(d && (d.phases || []).some(ph => (ph.ejercicios || []).some(e => e && e.tipo === 'movilidad')));
+const diaConEjercicios = (d) => !!d && (d.type === 'strength' || tieneMovilidad(d));
+const CALENTAMIENTO_ESTANDAR = 'Calentamiento · 5–10 min: movilidad articular general (cuello, hombros, columna, cadera, tobillos) y 2–3 series de aproximación del primer ejercicio con poco peso';
+
 // Plan v2: cada fase trae sus ejercicios con series, reps, RIR… (sin leer texto)
 function bloquesV2(phase){
   const ejs = phase.ejercicios || [];
@@ -377,6 +402,13 @@ function bloquesV2(phase){
   return ejs.map(e => {
     const rirTxt = e.rir == null ? null : ('RIR ' + e.rir + (e.rir_ultima != null && e.rir_ultima !== e.rir ? ', últ. RIR ' + e.rir_ultima : ''));
     const restSec = Number.isInteger(e.descanso_s) ? e.descanso_s : parseRestSeconds(rest);
+    if (e.tipo === 'movilidad') return {
+      kind: 'movilidad', name: e.nombre, bloque: e.bloque || null, sets: e.series, reps: e.reps_min,
+      isTime: e.unidad === 'segundos', pausa: Number.isInteger(e.pausa_s) ? e.pausa_s : null,
+      perSide: !!e.por_lado, conPeso: !!e.con_peso, nota: e.nota || null,
+      fase: phase.desc || 'Movilidad', faseN: phase.n || '', time: phase.time || null,
+      raw: (phase.n || '') + '·' + e.nombre
+    };
     return {
       kind: e.tipo === 'core' ? 'core' : 'exercise',
       name: e.nombre, sets: e.series, repsMin: e.reps_min, repsMax: e.reps_max != null ? e.reps_max : e.reps_min,
@@ -525,6 +557,78 @@ function SetRow({idx, total, data, ref_, isTime, hasWeight, optionalWeight, onCh
         {hasWeight && <button className={'pc-chip' + (data.pc ? ' sel' : '')} title="Usar peso corporal" onClick={onPC}>PC</button>}
       </div>
       {ref_ && <div className="set-ref">Ref: {ref_}{data.done ? <span className="ok"> · hecha</span> : null}</div>}
+    </div>
+  );
+}
+
+/* ============ Movilidad (8e): sin RIR; kg solo si el plan lo pide ============ */
+function MovilidadCard({items, history, sessionKey, logDate, soloMovilidad, onMarcar, onKg}){
+  const recDe = (ex) => history.find(r => r.date === logDate && r.session_key === sessionKey && normName(r.exercise_name) === normName(ex.name));
+  const ultimoKg = (ex) => {
+    const r = history.filter(x => normName(x.exercise_name) === normName(ex.name) && x.date !== logDate && x.sets && x.sets.some(s => s.weight_kg != null))
+      .sort((a,b) => a.date < b.date ? 1 : -1)[0];
+    return r ? { date: r.date, kg: Math.max(...r.sets.filter(s => s.weight_kg != null).map(s => s.weight_kg)) } : null;
+  };
+  const [kgs, setKgs] = useState({});
+  useEffect(()=>{
+    const ini = {};
+    items.forEach(ex => {
+      if (!ex.conPeso) return;
+      const r = recDe(ex), w = r && r.sets.find(s => s.weight_kg != null);
+      const u = ultimoKg(ex);
+      ini[ex.raw] = w ? String(w.weight_kg) : (u ? String(u.kg) : '');
+    });
+    setKgs(ini);
+  }, [sessionKey, logDate, items.length]);
+  const total = items.reduce((a, ex) => a + (ex.sets || 1), 0);
+  const hechas = items.reduce((a, ex) => { const r = recDe(ex); return a + (r ? r.sets.length : 0); }, 0);
+  const kgNum = (ex) => { const v = parseFloat(String(kgs[ex.raw] || '').replace(',', '.')); return isNaN(v) ? null : v; };
+  const presc = (ex) => `${ex.sets || 1} ${ex.sets === 1 ? 'vuelta' : 'vueltas'} · ${ex.reps}${ex.isTime ? ' s' : ' r'}${ex.pausa ? ` (${ex.pausa} s)` : ''}${ex.perSide ? ' /lado' : ''}`;
+  let letra = null;
+  return (
+    <div className="mov-card">
+      <div className="mov-head">
+        <span className="mov-title">🧘 {soloMovilidad ? 'Movilidad' : 'Calentamiento · movilidad'}</span>
+        <span className={'mov-prog' + (hechas >= total ? ' ok' : '')}>{hechas}/{total}</span>
+      </div>
+      <div className="mov-sub">{items[0].fase}{items[0].time ? ' · ' + items[0].time : ''}</div>
+      {items.map(ex => {
+        const r = recDe(ex);
+        const hechasEx = new Set(r ? r.sets.map(s => s.set_num) : []);
+        const l = (ex.bloque || '').split('.')[0];
+        const cab = l && l !== letra ? <div className="mov-letra">BLOQUE {l}</div> : null;
+        letra = l || letra;
+        const u = ex.conPeso ? ultimoKg(ex) : null;
+        return (
+          <React.Fragment key={ex.raw}>
+            {cab}
+            <div className="mov-ex">
+              <div className="mov-ex-top">
+                <div style={{flex:1}}>
+                  <div className="mov-name">{ex.bloque && <span className="mov-b">{ex.bloque}</span>}{ex.name}</div>
+                  <div className="mov-presc">{presc(ex)}</div>
+                  {ex.nota && <div className="mov-nota">{ex.nota}</div>}
+                </div>
+                <button className="ii-video" title="Ver en YouTube"
+                  onClick={()=>window.open('https://www.youtube.com/results?search_query='+encodeURIComponent(ex.name+' movilidad'), '_blank')}>🎬</button>
+              </div>
+              <div className="mov-row">
+                {Array.from({length: ex.sets || 1}, (_, k) => k + 1).map(v => (
+                  <button key={v} className={'mov-v' + (hechasEx.has(v) ? ' done' : '')} aria-pressed={hechasEx.has(v)}
+                    title={hechasEx.has(v) ? 'Hecha · pulsa para desmarcar' : 'Marcar vuelta ' + v + ' como hecha'}
+                    onClick={()=> onMarcar(ex, v, hechasEx.has(v) ? null : { reps: ex.reps, weight_kg: ex.conPeso ? kgNum(ex) : null })}>
+                    {hechasEx.has(v) ? '✓' : v}</button>
+                ))}
+                {ex.conPeso && <label className="mov-kg">kg
+                  <input type="text" inputMode="decimal" placeholder="—" value={kgs[ex.raw] || ''}
+                    onChange={e=>setKgs({...kgs, [ex.raw]: e.target.value})}
+                    onBlur={()=>{ if (r) onKg(ex, kgNum(ex)); }} /></label>}
+              </div>
+              {u && <div className="mov-ult">Última: {u.kg} kg · {u.date}</div>}
+            </div>
+          </React.Fragment>
+        );
+      })}
     </div>
   );
 }
@@ -799,7 +903,7 @@ function App(){
   }, [plan]);
 
   const week = weeks.find(w => w.week_num === selWeek) || null;
-  const strengthDays = week ? week.days.filter(d => d.type === 'strength') : [];
+  const strengthDays = week ? week.days.filter(diaConEjercicios) : [];   // fuerza o con movilidad
   const dayObj = week ? week.days.find(d => d.day === selDay) || null : null;
 
   // Si el día seleccionado no existe en la semana, mostrar descanso genérico
@@ -863,6 +967,42 @@ function App(){
     if (!nextSetLabel) advanceToNext(ex);   // última serie → pasar al siguiente ejercicio
   }, [sessionKey, selWeek, effectiveDay, logDate]);
 
+  /* --- Movilidad (8e): marcar vueltas, sin RIR --- */
+  const onMovilidad = useCallback((ex, vuelta, datos) => {
+    const today = logDate;
+    setHistory(h => {
+      let nh = [...h];
+      let rec = nh.find(r => r.date === today && r.session_key === sessionKey && normName(r.exercise_name) === normName(ex.name));
+      if (!rec){
+        if (!datos) return h;
+        rec = { date: today, week_num: selWeek, day: effectiveDay.day, session_key: sessionKey, exercise_name: ex.name, tipo: 'movilidad', sets: [] };
+        if (ex.bloque) rec.bloque = ex.bloque;
+        if (ex.isTime) rec.unidad = 'segundos';
+        nh.push(rec);
+      }
+      rec.sets = rec.sets.filter(s => s.set_num !== vuelta);
+      if (datos){
+        const s = { set_num: vuelta, reps: datos.reps };
+        if (datos.weight_kg != null) s.weight_kg = datos.weight_kg;
+        if (today === todayStr()) s.ts = isoLocal(new Date());
+        rec.sets.push(s);
+        rec.sets.sort((a,b) => a.set_num - b.set_num);
+      }
+      if (!rec.sets.length) nh = nh.filter(r => r !== rec);
+      saveHist(nh);
+      return nh;
+    });
+    vibrate(datos ? 40 : 20);
+  }, [sessionKey, selWeek, effectiveDay, logDate]);
+  const onMovilidadKg = useCallback((ex, kg) => {
+    setHistory(h => {
+      const nh = h.map(r => (r.date === logDate && r.session_key === sessionKey && normName(r.exercise_name) === normName(ex.name))
+        ? {...r, sets: r.sets.map(s => { const n = {...s}; if (kg == null) delete n.weight_kg; else n.weight_kg = kg; return n; })} : r);
+      saveHist(nh);
+      return nh;
+    });
+  }, [sessionKey, logDate]);
+
   /* --- Cambiar ejercicio (otra máquina, otra variante) --- */
   const cambioKey = (planName) => logDate + '|' + sessionKey + '|' + normName(planName);
   const cambiarEjercicio = (planName, nuevo) => {
@@ -884,13 +1024,13 @@ function App(){
   };
   const usados = useMemo(()=>{
     const vistos = new Map();
-    [...history].sort((a,b)=> a.date < b.date ? 1 : -1).forEach(r => { if (!vistos.has(normName(r.exercise_name))) vistos.set(normName(r.exercise_name), r.exercise_name); });
+    [...history].filter(r => r.tipo !== 'movilidad').sort((a,b)=> a.date < b.date ? 1 : -1).forEach(r => { if (!vistos.has(normName(r.exercise_name))) vistos.set(normName(r.exercise_name), r.exercise_name); });
     return [...vistos.values()];
   }, [history]);
 
   /* --- Bloques del día --- */
   const blocks = useMemo(()=>{
-    if (!effectiveDay || effectiveDay.type !== 'strength' || !effectiveDay.phases) return [];
+    if (!diaConEjercicios(effectiveDay) || !effectiveDay.phases) return [];
     const out = [];
     effectiveDay.phases.forEach(ph => parsePhase(ph).forEach(b => {
       if (b.kind === 'exercise' || b.kind === 'core'){
@@ -1249,7 +1389,7 @@ function App(){
           <button className="nav-btn" disabled={strengthIdx === strengthDays.length-1} onClick={()=>goStrength(1)}>→</button>
         </div>
 
-        {effectiveDay.type === 'strength' && (
+        {diaConEjercicios(effectiveDay) && (
           <div className="logdate-row">
             <span>📅 Fecha del registro:</span>
             <input type="date" value={logDate} max={todayStr()}
@@ -1258,7 +1398,7 @@ function App(){
           </div>
         )}
 
-        {effectiveDay.type !== 'strength' ? (
+        {!diaConEjercicios(effectiveDay) ? (
           <div className="restday">
             <div className="rd-emoji">{effectiveDay.type==='easy_run' ? '🏃' : effectiveDay.type==='mobility' ? '🧘' : '😴'}</div>
             <div className="rd-label">Hoy: {effectiveDay.label || restLabels[effectiveDay.type] || 'Descanso'}</div>
@@ -1280,7 +1420,18 @@ function App(){
               </div>
             )}
 
+            {effectiveDay.type === 'strength' && !blocks.some(b => b.kind === 'movilidad' || (b.kind === 'info' && /calentamiento/i.test(b.title))) && (
+              <div className="info-block"><span className="ib-title">▸ {CALENTAMIENTO_ESTANDAR}</span></div>
+            )}
             {blocks.map((b, i) => {
+              if (b.kind === 'movilidad'){
+                // Una tarjeta por fase de movilidad (los ejercicios seguidos de la misma fase)
+                if (i > 0 && blocks[i-1].kind === 'movilidad' && blocks[i-1].faseN === b.faseN) return null;
+                const items = [];
+                for (let j = i; j < blocks.length && blocks[j].kind === 'movilidad' && blocks[j].faseN === b.faseN; j++) items.push(blocks[j]);
+                return <MovilidadCard key={'mov-' + sessionKey + '-' + i} items={items} history={history} sessionKey={sessionKey}
+                  logDate={logDate} soloMovilidad={effectiveDay.type !== 'strength'} onMarcar={onMovilidad} onKg={onMovilidadKg} />;
+              }
               if (b.kind === 'info' || b.kind === 'proto'){
                 const parsed = b.kind === 'info' ? parseInfoItems(b.title) : null;
                 if (parsed){
