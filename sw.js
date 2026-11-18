@@ -22,6 +22,10 @@ self.addEventListener('activate', e => {
 // Estrategia: cache-first con actualización en segundo plano (stale-while-revalidate)
 self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
+  // PARCHE_18_TAILSCALE: solo la propia app y sus dependencias. Las llamadas a CoachAI
+  // (wifi o Tailscale) van directas desde la página, sin pasar por el service worker.
+  const u = e.request.url;
+  if (!(u.startsWith(self.location.origin) || u.includes('unpkg.com') || u.includes('fonts.g'))) return;
   e.respondWith(
     caches.match(e.request).then(cached => {
       const fetched = fetch(e.request).then(resp => {

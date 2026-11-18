@@ -34,7 +34,7 @@ input{font-family:"DM Mono",monospace;}
 .header-row{display:flex;align-items:center;gap:8px;}
 .icon-btn{background:var(--bg-input);color:var(--dim);border:1px solid var(--border2);border-radius:10px;min-width:44px;height:44px;font-size:18px;display:flex;align-items:center;justify-content:center;}
 .icon-btn:active{background:var(--border2);}
-.week-select{flex:1;background:var(--bg-input);color:var(--text);border:1px solid var(--border2);border-radius:10px;height:44px;padding:0 10px;font-family:"Barlow Condensed",sans-serif;font-size:17px;font-weight:600;appearance:none;-webkit-appearance:none;}
+.week-select{flex:1;min-width:0;text-overflow:ellipsis;background:var(--bg-input);color:var(--text);border:1px solid var(--border2);border-radius:10px;height:44px;padding:0 10px;font-family:"Barlow Condensed",sans-serif;font-size:17px;font-weight:600;appearance:none;-webkit-appearance:none;}
 
 /* ------- Timer bar ------- */
 .timer-bar{margin-top:8px;background:var(--bg-card);border:1px solid var(--teal);border-radius:12px;padding:10px 12px;position:relative;overflow:hidden;}
@@ -177,6 +177,8 @@ input{font-family:"DM Mono",monospace;}
 .mov-prog.ok{color:var(--green);}
 .mov-sub{font-size:12.5px;color:var(--dim);margin-top:2px;}
 .mov-letra{font-family:"DM Mono",monospace;font-size:11.5px;color:var(--dim2);letter-spacing:.8px;margin-top:12px;}
+/* PARCHE_19_CABECERA: cómo se hace cada bloque de movilidad */
+.mov-orden{font-family:"Inter",sans-serif;font-size:12.5px;color:var(--dim);letter-spacing:0;margin-top:3px;}
 .mov-ex{border-top:1px solid var(--border2);padding:10px 0 4px;margin-top:6px;}
 .mov-ex-top{display:flex;align-items:flex-start;gap:8px;}
 .mov-name{flex:1;font-size:15.5px;font-weight:600;line-height:1.25;}
@@ -268,6 +270,24 @@ const conTiempo = (ms) => { const c = new AbortController(); const t = setTimeou
 const motivoFallo = (e) => e && e.name === 'AbortError' ? 'CoachAI no responde (¿Tailscale activo y el servidor encendido?)'
   : e instanceof TypeError ? 'no se puede conectar con CoachAI (¿Tailscale activo o en casa? ¿permiso de red local en Chrome?)'
   : (e && e.message) || 'error desconocido';
+// PARCHE_18_TAILSCALE: diagnóstico de "Probar" cuando no se llega a CoachAI
+const detalleFallo = async (d, e) => {
+  if (!(e instanceof TypeError)) return '';
+  const partes = [];
+  for (const nombre of ['local-network-access', 'local-network']){
+    try { const p = await navigator.permissions.query({ name: nombre }); partes.push('permiso red local: ' + p.state); break; } catch(_){}
+  }
+  const t = conTiempo(8000);
+  try {
+    await fetch(d.url + '/api/fuerza/ejercicios', { mode: 'no-cors', cache: 'no-store', signal: t.signal,
+      ...(d.local ? { targetAddressSpace: 'local' } : {}) });
+    partes.push('el servidor contesta: falla CORS');
+  } catch(e2){
+    partes.push(e2 && e2.name === 'AbortError' ? 'el servidor no contesta' : 'Chrome no deja salir la petición (red o permiso)');
+  } finally { t.fin(); }
+  partes.push('error: ' + ((e && e.message) || (e && e.name) || '?'));
+  return '\n   · ' + partes.join(' · ');
+};
 const MIGRADO_KEY = 'gb2_migrado';
 function migrarDesdeV1(){
   try {
@@ -596,7 +616,14 @@ function MovilidadCard({items, history, sessionKey, logDate, soloMovilidad, onMa
         const r = recDe(ex);
         const hechasEx = new Set(r ? r.sets.map(s => s.set_num) : []);
         const l = (ex.bloque || '').split('.')[0];
-        const cab = l && l !== letra ? <div className="mov-letra">BLOQUE {l}</div> : null;
+        const letras = [...new Set(items.map(x => (x.bloque || '').split('.')[0]).filter(Boolean))];
+        const delBloque = l ? items.filter(x => (x.bloque || '').split('.')[0] === l) : [];
+        const vueltasB = Math.max(1, ...delBloque.map(x => x.sets || 1));
+        const sig = letras[letras.indexOf(l) + 1];
+        const orden = (delBloque.length > 1 ? delBloque.map(x => x.bloque).join(' → ') + ' seguidos; repite el bloque' : 'Repite el ejercicio')
+          + (sig ? ' antes de pasar al ' + sig : '');
+        const cab = l && l !== letra ? <div className="mov-letra">BLOQUE {l} · {vueltasB} {vueltasB === 1 ? 'VUELTA' : 'VUELTAS'}
+          {vueltasB > 1 && <div className="mov-orden">{orden}</div>}</div> : null;
         letra = l || letra;
         const u = ex.conPeso ? ultimoKg(ex) : null;
         return (
@@ -1203,7 +1230,7 @@ function App(){
         const r = await pedirA(d, '/api/fuerza/ejercicios', { signal: t.signal });
         if (!r.ok) throw new Error('CoachAI respondió ' + r.status);
         lineas.push(d.via + ': conectado ✓'); alguna = true;
-      } catch(e){ lineas.push(d.via + ': ' + motivoFallo(e)); }
+      } catch(e){ t.fin(); lineas.push(d.via + ': ' + motivoFallo(e) + await detalleFallo(d, e)); }
       finally { t.fin(); }
     }
     setSyncDlg(d => ({...d, probando: false, msg: lineas.join('\n'), clase: alguna ? 'ok' : 'mal'}));
