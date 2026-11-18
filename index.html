@@ -660,7 +660,7 @@ function MovilidadCard({items, history, sessionKey, logDate, soloMovilidad, onMa
   );
 }
 
-function ExerciseCard({ex, num, dayCtx, history, sessionKey, onSetDone, expanded, onToggle, target, onSetTarget, bwKg, onNoBW, cardId, logDate, onCambiar}){
+function ExerciseCard({ex, num, dayCtx, history, sessionKey, onSetDone, expanded, onToggle, target, onSetTarget, bwKg, onNoBW, cardId, logDate, onCambiar, inicioPlan}){
   const today = logDate;   // fecha con la que se registra (por defecto hoy, editable)
   const lastRec = useMemo(()=>lastSessionFor(history, ex.name, today), [history, ex.name, today]);
   const prog = useMemo(()=>progression(ex, lastRec, dayCtx), [ex, lastRec, dayCtx]);
@@ -679,11 +679,12 @@ function ExerciseCard({ex, num, dayCtx, history, sessionKey, onSetDone, expanded
   const pastRec = useMemo(()=>{
     const recs = history.filter(r =>
       r.session_key === sessionKey && normName(r.ejercicio_plan || r.exercise_name) === normName(ex.planName || ex.name) && r.date !== today
+      && (!inicioPlan || r.date >= inicioPlan)
     );
     if (!recs.length) return null;
     recs.sort((a,b) => a.date < b.date ? 1 : -1);
     return recs[0];
-  }, [history, ex.name, sessionKey, today]);
+  }, [history, ex.name, sessionKey, today, inicioPlan]);
 
   const fmtSet = (s) => (s.pc ? 'PC ' : '') + (s.weight_kg != null ? fmtKg(s.weight_kg)+'kg×' : '') + s.reps + (isTime?'s':'') + (s.rir != null ? '@R'+s.rir : '');
 
@@ -912,6 +913,8 @@ function App(){
   const weeks = plan ? plan.weeks : [];
   const now = new Date();
   const currentWeekNum = plan ? Math.min(Math.max(planWeek(plan, now),1), (weeks[weeks.length-1]||{}).week_num || 1) : 1;
+  // PARCHE_20_PLAN_NUEVO: una sesión solo cuenta como hecha en ESTE plan si es de su inicio en adelante
+  const inicioPlan = plan && plan.plan_start ? (d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'))(firstMondayOf(plan)) : null;
   const todayDayIdx = jsonDay(now);
 
   const [selWeek, setSelWeek] = useState(null);   // week_num
@@ -1254,7 +1257,7 @@ function App(){
     setMenuOpen(false);
   };
   const exportWeek = () => {
-    const recs = history.filter(r => r.week_num === selWeek);
+    const recs = history.filter(r => r.week_num === selWeek && (!inicioPlan || r.date >= inicioPlan));
     if (!recs.length){ showToast('Sin registros en la semana '+selWeek); setMenuOpen(false); return; }
     const claves = [...new Set(recs.map(r=>r.date+'|'+r.session_key))].sort();
     downloadJSON({
@@ -1403,7 +1406,7 @@ function App(){
           {effectiveDay.duration ? ' · ⏱ '+effectiveDay.duration : ''}
           {week.volume_progression && week.volume_progression.note ? ' · '+week.volume_progression.note : ''}
           {(() => {
-            const rec = history.find(r => r.session_key === sessionKey);
+            const rec = history.find(r => r.session_key === sessionKey && (!inicioPlan || r.date >= inicioPlan));
             return rec ? <span style={{color:'var(--green)'}}> · ✓ entrenado el {rec.date}</span> : null;
           })()}
         </div>
@@ -1486,7 +1489,7 @@ function App(){
               exNum += 1;
               const id = sessionKey+'-'+i;
               return (
-                <ExerciseCard key={id} ex={b} num={exNum} dayCtx={dayCtx}
+                <ExerciseCard key={id} ex={b} num={exNum} dayCtx={dayCtx} inicioPlan={inicioPlan}
                   history={history} sessionKey={sessionKey}
                   onSetDone={onSetDone}
                   target={targets[normName(b.name)] || null}
