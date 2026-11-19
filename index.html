@@ -309,6 +309,18 @@ const MIGRACION = migrarDesdeV1();
 /* ============ Utils ============ */
 const vibrate = (p) => { if (navigator.vibrate) navigator.vibrate(p); };
 const normName = (s) => s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+// PARCHE_28_ALIAS: nombres antiguos del press de banca -> nombre nuevo (los mismos alias que CoachAI)
+const ALIAS_NOMBRES = {
+  'press banca plano': 'Press banca plano mancuernas',
+  'press banca mancuernas': 'Press banca plano mancuernas',
+  'press inclinado mancuernas': 'Press banca inclinado mancuernas',
+  'press banca multipower': 'Press banca plano multipower',
+  'press inclinado multipower': 'Press banca inclinado multipower',
+  'press banca declinado': 'Press banca declinado barra',
+};
+const nombreCanon = (s) => ALIAS_NOMBRES[normName(s || '')] || s;
+const canonName = (s) => normName(nombreCanon(s));
+const buscarTarget = (t, name) => t[normName(name)] || t[Object.keys(t).find(k => canonName(k) === canonName(name))] || null;
 const todayStr = () => { const d = new Date(); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); };
 // "2026-10-19T18:32:05+02:00": hora local con desfase (lo que espera CoachAI)
 const isoLocal = (d) => {
@@ -468,8 +480,8 @@ function parsePhase(phase){
 
 /* ============ Historial / progresión ============ */
 function lastSessionFor(history, name, excludeDate){
-  const n = normName(name);
-  const recs = history.filter(r => normName(r.exercise_name) === n && r.date !== excludeDate && r.sets && r.sets.length);
+  const n = canonName(name);
+  const recs = history.filter(r => canonName(r.exercise_name) === n && r.date !== excludeDate && r.sets && r.sets.length);
   if (!recs.length) return null;
   recs.sort((a,b) => a.date < b.date ? 1 : -1);
   return recs[0];
@@ -585,7 +597,7 @@ function SetRow({idx, total, data, ref_, isTime, hasWeight, optionalWeight, onCh
 function MovilidadCard({items, history, sessionKey, logDate, soloMovilidad, onMarcar, onKg}){
   const recDe = (ex) => history.find(r => r.date === logDate && r.session_key === sessionKey && normName(r.exercise_name) === normName(ex.name));
   const ultimoKg = (ex) => {
-    const r = history.filter(x => normName(x.exercise_name) === normName(ex.name) && x.date !== logDate && x.sets && x.sets.some(s => s.weight_kg != null))
+    const r = history.filter(x => canonName(x.exercise_name) === canonName(ex.name) && x.date !== logDate && x.sets && x.sets.some(s => s.weight_kg != null))
       .sort((a,b) => a.date < b.date ? 1 : -1)[0];
     return r ? { date: r.date, kg: Math.max(...r.sets.filter(s => s.weight_kg != null).map(s => s.weight_kg)) } : null;
   };
@@ -1054,7 +1066,7 @@ function App(){
   };
   const usados = useMemo(()=>{
     const vistos = new Map();
-    [...history].filter(r => r.tipo !== 'movilidad').sort((a,b)=> a.date < b.date ? 1 : -1).forEach(r => { if (!vistos.has(normName(r.exercise_name))) vistos.set(normName(r.exercise_name), r.exercise_name); });
+    [...history].filter(r => r.tipo !== 'movilidad').sort((a,b)=> a.date < b.date ? 1 : -1).forEach(r => { if (!vistos.has(canonName(r.exercise_name))) vistos.set(canonName(r.exercise_name), nombreCanon(r.exercise_name)); });
     return [...vistos.values()];
   }, [history]);
 
@@ -1492,7 +1504,7 @@ function App(){
                 <ExerciseCard key={id} ex={b} num={exNum} dayCtx={dayCtx} inicioPlan={inicioPlan}
                   history={history} sessionKey={sessionKey}
                   onSetDone={onSetDone}
-                  target={targets[normName(b.name)] || null}
+                  target={buscarTarget(targets, b.name)}
                   onSetTarget={setTarget}
                   bwKg={lastBW ? lastBW.kg : null}
                   onNoBW={()=>{ showToast('Registra primero tu peso corporal'); setBwDraft(''); setBwOpen(true); }}
